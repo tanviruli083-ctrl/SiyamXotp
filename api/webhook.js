@@ -59,17 +59,15 @@ try {
     }
 
     // ==========================================
-    // 🔄 AUTO CHANNEL SYNC FUNCTION
+    // 🔄 AUTO CHANNEL SYNC FUNCTION (FIXED SCOPE)
     // ==========================================
-    async function syncGlobalOTPs() {
+    bot.syncGlobalOTPs = async function() {
         try {
             const res = await fetch(`${STEX_BASE_URL}/success-otp`, { headers: STEX_HEADERS });
             const json = await res.json();
             
             if (json.meta && json.meta.code === 200 && json.data && json.data.otps) {
-                // প্যানেলের সব ওটিপি চেক করা
                 for (let otp of json.data.otps.reverse()) { 
-                    // চেক করা যে এই ওটিপি আগে চ্যানেলে গেছে কি না
                     let { data } = await supabase.from('stex_posted_otps').select('otp_id').eq('otp_id', otp.otp_id).single();
                     if (!data) {
                         const codeMatch = otp.message.match(/\d{4,8}/);
@@ -88,13 +86,12 @@ try {
                             reply_markup: { inline_keyboard: [[Markup.button.url('🤖 Get This Number', `https://t.me/${BOT_USERNAME}`)]] }
                         }).catch(()=> {});
 
-                        // ডাটাবেসে সেভ করা যাতে দ্বিতীয়বার না যায়
                         await supabase.from('stex_posted_otps').insert([{ otp_id: otp.otp_id }]);
                     }
                 }
             }
         } catch(e) {}
-    }
+    };
 
     // ==========================================
     // 📱 BOTTOM KEYBOARD
@@ -134,7 +131,6 @@ try {
         } catch (e) {}
     });
 
-    // ... (Profile, History, Traffic remain same, skipping repetition for cleanliness) ...
     bot.hears('👤 My Profile', async (ctx) => {
         try {
             const user = await getUser(ctx.from.id);
@@ -154,6 +150,56 @@ try {
             history.slice(-5).reverse().forEach(h => { msg += `📞 \`+${h.num}\`\n💬 Code: \`${h.code}\`\n\n`; });
             ctx.reply(msg, { parse_mode: 'Markdown' });
         } catch (e) {}
+    });
+
+    // ==========================================
+    // 🔥 TRENDING TRAFFIC (SMART ALGORITHM)
+    // ==========================================
+    bot.hears('🔥 Trending Traffic', async (ctx) => {
+        const waitMsg = await ctx.reply('⏳ Analyzing global market traffic...');
+        try {
+            const res = await fetch(`${STEX_BASE_URL}/console`, { headers: STEX_HEADERS });
+            const json = await res.json();
+            
+            if (json.meta && json.meta.code === 200 && json.data.hits) {
+                const hits = json.data.hits;
+                const rangeCounts = {};
+                
+                hits.forEach(h => {
+                    const r = h.range;
+                    rangeCounts[r] = (rangeCounts[r] || 0) + 1;
+                });
+
+                const topRanges = Object.keys(rangeCounts)
+                    .map(k => ({ range: k, count: rangeCounts[k] }))
+                    .sort((a, b) => b.count - a.count)
+                    .slice(0, 5);
+
+                let text = `🔥 *LIVE TRENDING PREFIXES*\n━━━━━━━━━━━━━━━\n_Based on global success rate in last 15m_\n\n`;
+                let inlineButtons = [];
+
+                topRanges.forEach((t, index) => {
+                    text += `${index + 1}. 🔥 \`${t.range}\` ➾ *${t.count} Hits*\n`;
+                    inlineButtons.push([Markup.button.callback(`🔥 Use ${t.range}`, `set_pfx_${t.range.replace('XXX', '')}`)]);
+                });
+
+                await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, null, text, { 
+                    parse_mode: 'Markdown',
+                    reply_markup: { inline_keyboard: inlineButtons }
+                });
+            } else {
+                await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, null, '📭 No live traffic found.');
+            }
+        } catch (e) {
+            await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, null, '❌ Server connection failed.');
+        }
+    });
+
+    bot.action(/set_pfx_(.+)/, async (ctx) => {
+        const prefix = ctx.match[1];
+        await updateUser(ctx.from.id, { current_prefix: prefix, status: 'idle' });
+        ctx.answerCbQuery(`✅ Prefix Set to ${prefix}XXX`, { show_alert: true });
+        sendNumberMenu(ctx, prefix);
     });
 
     // ==========================================
@@ -223,7 +269,7 @@ try {
     });
 
     // ==========================================
-    // 🔄 CHECK OTP (SEPARATE MESSAGE)
+    // 🔄 CHECK OTP (SEPARATE MESSAGE FIX)
     // ==========================================
     bot.action(/chk_(.+)/, async (ctx) => {
         const targetNumber = ctx.match[1];
@@ -239,7 +285,6 @@ try {
                     const pureCode = codeMatch ? codeMatch[0] : foundOtp.message;
                     const srv = guessService(foundOtp.message);
 
-                    // ১. পুরোনো মেসেজটি এডিট করে দেওয়া
                     const updateText = `✅ *OTP Received Successfully!*\nCheck the new message below 👇`;
                     const buttons = Markup.inlineKeyboard([
                         [Markup.button.callback('🔄 Get Another Number', 'get_new_number')],
@@ -247,11 +292,10 @@ try {
                     ]);
                     await ctx.editMessageText(updateText, { parse_mode: 'Markdown', ...buttons }).catch(()=>{});
 
-                    // ২. নতুন মেসেজে সার্ভিস, নাম্বার ও কোড দেওয়া (সহজে কপি করার জন্য)
+                    // আলাদা ফ্রেশ মেসেজে কোড (সহজে কপি করার জন্য)
                     const separateMsg = `📱 *Service:* ${srv}\n📞 *Number:* \`${foundOtp.number}\`\n💬 *Code:* \`${pureCode}\``;
                     await ctx.reply(separateMsg, { parse_mode: 'Markdown' });
 
-                    // ৩. ডাটাবেসে হিস্ট্রি সেভ করা
                     const user = await getUser(ctx.from.id);
                     const newHistory = user.history || [];
                     newHistory.push({ num: foundOtp.number, code: pureCode });
@@ -279,22 +323,16 @@ try {
 module.exports = async function handler(req, res) {
     if (initError) return res.status(200).send(`🚨 Error: ${initError}`);
     
-    // ক্রন জব বা ট্রিগারের জন্য স্পেশাল রুট
     if (req.method === 'GET' && req.query.sync === 'true') {
-        await bot.syncGlobalOTPs(); 
+        if (bot && bot.syncGlobalOTPs) await bot.syncGlobalOTPs(); 
         return res.status(200).send('✅ OTPs Synced to Channel');
     }
 
     if (req.method === 'POST') {
         try { 
-            // কেউ কোনো মেসেজ দিলে বা বাটন চাপলে ব্যাকগ্রাউন্ডে চ্যানেল সিঙ্ক হবে
-            bot.syncGlobalOTPs().catch(()=>{}); 
-            
+            if (bot && bot.syncGlobalOTPs) bot.syncGlobalOTPs().catch(()=>{}); 
             await bot.handleUpdate(req.body); 
             res.status(200).send('OK'); 
         } catch (error) { res.status(500).send('Error'); }
     } else { res.status(200).send('✅ Premium OTP Bot is Running!'); }
 };
-
-// Functions access scope fix
-if(bot) bot.syncGlobalOTPs = syncGlobalOTPs;
