@@ -29,7 +29,11 @@ const DOLLAR_RATE = 150;
 async function getUser(userId, username) {
     let { data } = await supabase.from('stex_users').select('*').eq('user_id', userId.toString()).single();
     if (!data) {
-        data = { user_id: userId.toString(), username: username || 'User', current_prefix: null, status: 'idle', total_otps: 0, history: [], total_withdrawn: 0, bonus_balance: 0, temp_data: {}, cooldown_until: null };
+        data = { 
+            user_id: userId.toString(), username: username || 'User', current_prefix: null, status: 'idle', 
+            total_otps: 0, history: [], total_withdrawn: 0, bonus_balance: 0, temp_data: {}, 
+            cooldown_until: null, spam_count: 0, last_msg_time: 0 
+        };
         await supabase.from('stex_users').insert([data]);
     }
     return data;
@@ -55,46 +59,53 @@ function guessService(msg) {
 }
 
 // ==========================================
-// 🛡️ ANTI-SPAM SYSTEM (15 MIN COOLDOWN)
+// 🛡️ ANTI-SPAM SYSTEM (DB-BASED FOR VERCEL)
 // ==========================================
-const spamCache = new Map();
-
 bot.use(async (ctx, next) => {
     if (!ctx.from) return next();
-    if (ctx.from.id.toString() === ADMIN_ID) return next(); 
+    if (ctx.from.id.toString() === ADMIN_ID) return next(); // অ্যাডমিনের জন্য স্প্যাম ফ্রি
 
     try {
-        const user = await getUser(ctx.from.id);
+        const user = await getUser(ctx.from.id, ctx.from.first_name);
         const now = Date.now();
 
+        // ১. ইউজার কি ব্যান অবস্থায় আছে?
         if (user.cooldown_until) {
             const cooldownEnd = new Date(user.cooldown_until).getTime();
             if (now < cooldownEnd) {
                 const left = Math.ceil((cooldownEnd - now) / 60000);
-                const lastWarn = spamCache.get(`${ctx.from.id}_warn`) || 0;
-                if (now - lastWarn > 10000) {
-                    spamCache.set(`${ctx.from.id}_warn`, now);
-                    ctx.reply(`🚫 *SPAM DETECTED!*\nYou clicked too fast. Please wait ${left} minutes.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                // প্রতিবার চাপলে যেন মেসেজ দিয়ে বিরক্ত না করে, তাই ৫ সেকেন্ড পরপর মেসেজ দেবে
+                if (now - (user.last_msg_time || 0) > 5000) {
+                    await updateUser(ctx.from.id, { last_msg_time: now });
+                    ctx.reply(`🚫 *SPAM DETECTED!*\nYou are temporarily blocked. Please try again after ${left} minutes.`, { parse_mode: 'Markdown' }).catch(()=>{});
                 }
-                return; 
-            } else { await updateUser(ctx.from.id, { cooldown_until: null }); }
+                return; // এখানেই কোড থেমে যাবে, ব্লক!
+            } else {
+                await updateUser(ctx.from.id, { cooldown_until: null, spam_count: 0 }); // ব্যান শেষ
+            }
         }
 
-        const uCache = spamCache.get(ctx.from.id) || { count: 0, firstTime: now };
-        if (now - uCache.firstTime < 3000) {
-            uCache.count++;
-            if (uCache.count > 5) {
+        // ২. স্প্যাম কাউন্টার লজিক
+        const timeDiff = now - (user.last_msg_time || 0);
+        let newSpamCount = user.spam_count || 0;
+
+        if (timeDiff < 2000) { // ২ সেকেন্ডের কম সময়ে পরপর ক্লিক করলে
+            newSpamCount += 1;
+            if (newSpamCount >= 4) { // ৫ বার স্প্যাম করলে
                 const cooldownTime = new Date(now + 15 * 60000).toISOString();
-                await updateUser(ctx.from.id, { cooldown_until: cooldownTime });
-                spamCache.delete(ctx.from.id);
-                return ctx.reply('🚫 *ACCOUNT SUSPENDED (15 MIN)*\n\nYou have been temporarily muted for spamming.', { parse_mode: 'Markdown' }).catch(()=>{});
+                await updateUser(ctx.from.id, { cooldown_until: cooldownTime, spam_count: 0, last_msg_time: now });
+                return ctx.reply('🚫 *ACCOUNT SUSPENDED (15 MIN)*\n\nYou have been temporarily muted for spamming the bot buttons rapidly.', { parse_mode: 'Markdown' }).catch(()=>{});
+            } else {
+                await updateUser(ctx.from.id, { spam_count: newSpamCount, last_msg_time: now });
             }
         } else {
-            uCache.count = 1;
-            uCache.firstTime = now;
+            // নরমাল স্পিডে ক্লিক করলে কাউন্টার আবার জিরো হয়ে যাবে
+            await updateUser(ctx.from.id, { spam_count: 0, last_msg_time: now });
         }
-        spamCache.set(ctx.from.id, uCache);
-    } catch (e) {}
+    } catch (e) {
+        console.log("Anti-spam error");
+    }
+    
     return next();
 });
 
@@ -221,7 +232,7 @@ bot.action('close_msg', async (ctx) => { ctx.deleteMessage().catch(()=>{}); });
 // ==========================================
 bot.on('text', async (ctx, next) => {
     try {
-        if (ctx.message.text.startsWith('/')) return next(); // কমান্ডগুলো স্কিপ করবে
+        if (ctx.message.text.startsWith('/')) return next(); 
 
         const user = await getUser(ctx.from.id);
         const text = ctx.message.text.trim();
@@ -333,7 +344,6 @@ bot.command('addbalance', async (ctx) => {
 
     const targetId = args[1];
     const amount = parseFloat(args[2]);
-
     if (isNaN(amount)) return ctx.reply('❌ Invalid amount!');
 
     let { data: user } = await supabase.from('stex_users').select('*').eq('user_id', targetId).single();
@@ -343,11 +353,7 @@ bot.command('addbalance', async (ctx) => {
     await updateUser(targetId, { bonus_balance: newBonus });
 
     ctx.reply(`✅ Successfully updated balance for \`${targetId}\`\n💰 *New Bonus Balance:* $${newBonus.toFixed(3)}`, { parse_mode: 'Markdown' });
-
-    // ইউজারকে জানিয়ে দেওয়া
-    if (amount > 0) {
-        bot.telegram.sendMessage(targetId, `🎁 *BONUS RECEIVED!*\n\nAdmin has added $${amount.toFixed(3)} to your wallet!`, { parse_mode: 'Markdown' }).catch(()=>{});
-    }
+    if (amount > 0) bot.telegram.sendMessage(targetId, `🎁 *BONUS RECEIVED!*\n\nAdmin has added $${amount.toFixed(3)} to your wallet!`, { parse_mode: 'Markdown' }).catch(()=>{});
 });
 
 bot.action(/^appr_(.+)_(.+)$/, async (ctx) => {
