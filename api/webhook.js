@@ -145,7 +145,7 @@ const mainMenu = Markup.keyboard([
 bot.command('start', async (ctx) => {
     try {
         await getUser(ctx.from.id, ctx.from.first_name);
-        ctx.reply(`🌟 *Welcome to Premium OTP Bot!* 🌟\n\n⚡ Superfast & Reliable OTP Bypass Service.\n👇 Select an option from the menu below:`, { parse_mode: 'Markdown', ...mainMenu });
+        ctx.reply(`🌟 *Welcome to Siyam X OTP 🚀!* 🌟\n\n⚡ Get number and code faster.\n👇 Select an option from the menu below:`, { parse_mode: 'Markdown', ...mainMenu });
     } catch (e) {}
 });
 
@@ -433,7 +433,7 @@ bot.action('get_new_number', async (ctx) => {
         if (json.meta && json.meta.code === 200 && json.data && json.data.no_plus_number) {
             const num = json.data.no_plus_number;
             const text = `✅ *Number Allocated!*\n━━━━━━━━━━━━━━━\n📞 *Number:* \`${num}\`\n🎯 *Range:* \`${user.current_prefix}XXX\`\n\n_Waiting for SMS... Click the Check OTP button below._`;
-            const buttons = Markup.inlineKeyboard([[Markup.button.callback('🔄 Check OTP', `chk_${num}`)], [Markup.button.callback('🚫 Cancel', 'get_new_number')], [Markup.button.callback('🔙 Menu', 'close_msg')]]);
+            const buttons = Markup.inlineKeyboard([[Markup.button.callback('🔄 Check OTP', `chk_${num}`)], [Markup.button.callback('🔁 Change number', 'get_new_number')], [Markup.button.callback('🔙 Menu', 'close_msg')]]);
             await ctx.editMessageText(text, { parse_mode: 'Markdown', ...buttons }).catch(()=>{});
         } else {
             await ctx.editMessageText(`❌ *Stock Unavailable*\nNo numbers left in ${user.current_prefix}XXX.`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('⚙️ Set Another Prefix', 'set_prefix')]]) }).catch(()=>{});
