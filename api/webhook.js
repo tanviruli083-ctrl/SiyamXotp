@@ -145,7 +145,7 @@ const mainMenu = Markup.keyboard([
 bot.command('start', async (ctx) => {
     try {
         await getUser(ctx.from.id, ctx.from.first_name);
-        ctx.reply(`🌟 *Welcome to Siyam X OTP 🚀!* 🌟\n\n⚡ Get number and code faster.\n👇 Get full tutorial /tutorial:`, { parse_mode: 'Markdown', ...mainMenu });
+        ctx.reply(`🌟 *Welcome to Siyam X OTP 🚀!* 🌟\n\n⚡ Get number and code faster.\n👇 Get full tutorial /tutorial`, { parse_mode: 'Markdown', ...mainMenu });
     } catch (e) {}
 });
 bot.command('tutorial', async (ctx) => {
