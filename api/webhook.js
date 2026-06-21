@@ -145,10 +145,14 @@ const mainMenu = Markup.keyboard([
 bot.command('start', async (ctx) => {
     try {
         await getUser(ctx.from.id, ctx.from.first_name);
-        ctx.reply(`🌟 *Welcome to Siyam X OTP 🚀!* 🌟\n\n⚡ Get number and code faster.\n👇 Select an option from the menu below:`, { parse_mode: 'Markdown', ...mainMenu });
+        ctx.reply(`🌟 *Welcome to Siyam X OTP 🚀!* 🌟\n\n⚡ Get number and code faster.\n👇 Get full tutorial /tutorial:`, { parse_mode: 'Markdown', ...mainMenu });
     } catch (e) {}
 });
-
+bot.command('tutorial', async (ctx) => {
+    // 25 এর জায়গায় আপনার চ্যানেলের ভিডিও মেসেজ আইডিটি বসিয়ে দিন
+    await ctx.telegram.copyMessage(ctx.chat.id, CHANNEL_ID, 24)
+        .catch(() => ctx.reply('⚠️ টিউটোরিয়াল ভিডিওটি পাওয়া যাচ্ছে না!'));
+});
 // ==========================================
 // 💳 BALANCE & WITHDRAW SYSTEM
 // ==========================================
