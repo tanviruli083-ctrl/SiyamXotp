@@ -29,7 +29,7 @@ const DOLLAR_RATE = 150;
 async function getUser(userId, username) {
     let { data } = await supabase.from('stex_users').select('*').eq('user_id', userId.toString()).single();
     if (!data) {
-        data = { user_id: userId.toString(), username: username || 'User', current_prefix: null, status: 'idle', total_otps: 0, history: [], total_withdrawn: 0, temp_data: {}, cooldown_until: null };
+        data = { user_id: userId.toString(), username: username || 'User', current_prefix: null, status: 'idle', total_otps: 0, history: [], total_withdrawn: 0, bonus_balance: 0, temp_data: {}, cooldown_until: null };
         await supabase.from('stex_users').insert([data]);
     }
     return data;
@@ -61,30 +61,25 @@ const spamCache = new Map();
 
 bot.use(async (ctx, next) => {
     if (!ctx.from) return next();
-    if (ctx.from.id.toString() === ADMIN_ID) return next(); // অ্যাডমিন স্প্যাম ফিল্টারের বাইরে থাকবে
+    if (ctx.from.id.toString() === ADMIN_ID) return next(); 
 
     try {
         const user = await getUser(ctx.from.id);
         const now = Date.now();
 
-        // ইউজার কি ব্যান আছে?
         if (user.cooldown_until) {
             const cooldownEnd = new Date(user.cooldown_until).getTime();
             if (now < cooldownEnd) {
                 const left = Math.ceil((cooldownEnd - now) / 60000);
                 const lastWarn = spamCache.get(`${ctx.from.id}_warn`) || 0;
-                // বারবার মেসেজ দিয়ে চ্যাট নোংরা না করার জন্য ১০ সেকেন্ড পর পর ওয়ার্নিং
                 if (now - lastWarn > 10000) {
                     spamCache.set(`${ctx.from.id}_warn`, now);
-                    ctx.reply(`🚫 *SPAM DETECTED!*\nYou clicked too fast. Please wait ${left} minutes to use the bot again.`, { parse_mode: 'Markdown' }).catch(()=>{});
+                    ctx.reply(`🚫 *SPAM DETECTED!*\nYou clicked too fast. Please wait ${left} minutes.`, { parse_mode: 'Markdown' }).catch(()=>{});
                 }
-                return; // কোড এখানেই থেমে যাবে, বট কাজ করবে না
-            } else {
-                await updateUser(ctx.from.id, { cooldown_until: null }); // ব্যান শেষ
-            }
+                return; 
+            } else { await updateUser(ctx.from.id, { cooldown_until: null }); }
         }
 
-        // প্রতি ৩ সেকেন্ডে ৫টার বেশি রিকোয়েস্ট দিলে ব্যান
         const uCache = spamCache.get(ctx.from.id) || { count: 0, firstTime: now };
         if (now - uCache.firstTime < 3000) {
             uCache.count++;
@@ -92,14 +87,13 @@ bot.use(async (ctx, next) => {
                 const cooldownTime = new Date(now + 15 * 60000).toISOString();
                 await updateUser(ctx.from.id, { cooldown_until: cooldownTime });
                 spamCache.delete(ctx.from.id);
-                return ctx.reply('🚫 *ACCOUNT SUSPENDED (15 MIN)*\n\nYou have been temporarily muted for spamming the bot.', { parse_mode: 'Markdown' }).catch(()=>{});
+                return ctx.reply('🚫 *ACCOUNT SUSPENDED (15 MIN)*\n\nYou have been temporarily muted for spamming.', { parse_mode: 'Markdown' }).catch(()=>{});
             }
         } else {
             uCache.count = 1;
             uCache.firstTime = now;
         }
         spamCache.set(ctx.from.id, uCache);
-
     } catch (e) {}
     return next();
 });
@@ -150,11 +144,14 @@ bot.command('start', async (ctx) => {
 bot.hears('💳 My Balance', async (ctx) => {
     try {
         const user = await getUser(ctx.from.id);
-        const totalEarned = user.total_otps * 0.004;
+        const otpEarned = user.total_otps * 0.004;
+        const bonus = user.bonus_balance || 0;
         const withdrawn = user.total_withdrawn || 0;
+        
+        const totalEarned = otpEarned + bonus;
         const available = totalEarned - withdrawn;
         
-        const msg = `💳 *YOUR WALLET*\n━━━━━━━━━━━━━━━\n👤 *User:* ${user.username}\n\n✅ *Total Earned:* $${totalEarned.toFixed(3)}\n📤 *Total Withdrawn:* $${withdrawn.toFixed(3)}\n💵 *Available Balance:* $${available.toFixed(3)}\n\n_⚠️ Minimum withdrawal is $${MIN_WITHDRAW}_`;
+        const msg = `💳 *YOUR WALLET*\n━━━━━━━━━━━━━━━\n👤 *User:* ${user.username}\n\n✅ *OTP Earnings:* $${otpEarned.toFixed(3)}\n🎁 *Bonus Balance:* $${bonus.toFixed(3)}\n\n📥 *Total Earned:* $${totalEarned.toFixed(3)}\n📤 *Total Withdrawn:* $${withdrawn.toFixed(3)}\n💵 *Available Balance:* $${available.toFixed(3)}\n\n_⚠️ Minimum withdrawal is $${MIN_WITHDRAW}_`;
         
         const buttons = Markup.inlineKeyboard([[Markup.button.callback('💸 Withdraw Funds', 'req_withdraw')]]);
         ctx.reply(msg, { parse_mode: 'Markdown', ...buttons });
@@ -163,7 +160,7 @@ bot.hears('💳 My Balance', async (ctx) => {
 
 bot.action('req_withdraw', async (ctx) => {
     const user = await getUser(ctx.from.id);
-    const available = (user.total_otps * 0.004) - (user.total_withdrawn || 0);
+    const available = (user.total_otps * 0.004) + (user.bonus_balance || 0) - (user.total_withdrawn || 0);
 
     if (available < MIN_WITHDRAW) return ctx.answerCbQuery(`❌ Not enough balance! Min: $${MIN_WITHDRAW}`, { show_alert: true });
 
@@ -224,6 +221,8 @@ bot.action('close_msg', async (ctx) => { ctx.deleteMessage().catch(()=>{}); });
 // ==========================================
 bot.on('text', async (ctx, next) => {
     try {
+        if (ctx.message.text.startsWith('/')) return next(); // কমান্ডগুলো স্কিপ করবে
+
         const user = await getUser(ctx.from.id);
         const text = ctx.message.text.trim();
 
@@ -242,14 +241,14 @@ bot.on('text', async (ctx, next) => {
             let temp = user.temp_data || {};
             temp.wd_number = text;
             
-            const available = (user.total_otps * 0.004) - (user.total_withdrawn || 0);
+            const available = (user.total_otps * 0.004) + (user.bonus_balance || 0) - (user.total_withdrawn || 0);
             await updateUser(ctx.from.id, { status: 'waiting_wd_amount', temp_data: temp });
             
             ctx.reply(`🏦 *Method:* ${temp.wd_method}\n📞 *Number:* \`${text}\`\n💵 *Available:* $${available.toFixed(3)}\n\n*Enter amount to withdraw (Min $0.5):*`, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'cancel_wd')]]) });
         }
         else if (user.status === 'waiting_wd_amount') {
             const amount = parseFloat(text);
-            const available = (user.total_otps * 0.004) - (user.total_withdrawn || 0);
+            const available = (user.total_otps * 0.004) + (user.bonus_balance || 0) - (user.total_withdrawn || 0);
             ctx.deleteMessage().catch(()=>{}); 
 
             if (isNaN(amount) || amount < MIN_WITHDRAW || amount > available) {
@@ -271,7 +270,7 @@ bot.on('text', async (ctx, next) => {
 });
 
 bot.action('cancel_wd', async (ctx) => {
-    await updateUser(ctx.from.id, { status: 'idle', temp_data: {} }); // টেম্প ডাটা মুছে ফেলা হলো
+    await updateUser(ctx.from.id, { status: 'idle', temp_data: {} });
     await ctx.editMessageText('❌ Withdrawal Process Cancelled.', { parse_mode: 'Markdown' }).catch(()=>{});
     setTimeout(() => ctx.deleteMessage().catch(()=>{}), 2000);
 });
@@ -283,7 +282,6 @@ bot.action('confirm_wd', async (ctx) => {
         if (!temp.wd_amount) return ctx.answerCbQuery('Session expired. Try again.', { show_alert: true });
 
         const newWithdrawn = (user.total_withdrawn || 0) + temp.wd_amount;
-        // উইথড্র সাকসেস হওয়ার সাথে সাথে টেম্প ডাটা মুছে ফেলা হলো
         await updateUser(ctx.from.id, { total_withdrawn: newWithdrawn, temp_data: {} });
 
         await ctx.editMessageText(`✅ *Withdrawal Request Sent!*\n\nYour request for $${temp.wd_amount.toFixed(3)} has been sent to the Admin. Please wait for approval.`, { parse_mode: 'Markdown' }).catch(()=>{});
@@ -292,13 +290,66 @@ bot.action('confirm_wd', async (ctx) => {
         const adminMsg = `🚨 *NEW WITHDRAWAL REQUEST* 🚨\n━━━━━━━━━━━━━━━━━━\n👤 *User:* ${user.username}\n🆔 *ID:* \`${user.user_id}\`\n\n🏦 *Method:* ${temp.wd_method}\n📞 *Number:* \`${temp.wd_number}\`\n💵 *Amount:* $${temp.wd_amount.toFixed(3)}  ( *${bdtAmount} BDT* )`;
         const adminButtons = Markup.inlineKeyboard([[Markup.button.callback('✅ Approve Payment', `appr_${user.user_id}_${temp.wd_amount}`)], [Markup.button.callback('❌ Reject & Refund', `reje_${user.user_id}_${temp.wd_amount}`)]]);
         await bot.telegram.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'Markdown', ...adminButtons }).catch(()=>{});
-
     } catch (e) { ctx.answerCbQuery('❌ Error processing request.'); }
 });
 
 // ==========================================
-// 👑 ADMIN APPROVE / REJECT ACTIONS
+// 👑 SECURE ADMIN COMMANDS & WITHDRAW ACTIONS
 // ==========================================
+bot.command('stats', async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_ID) return;
+    const { count } = await supabase.from('stex_users').select('*', { count: 'exact', head: true });
+    const { data } = await supabase.from('stex_users').select('total_otps');
+    const totalOtps = data ? data.reduce((sum, u) => sum + u.total_otps, 0) : 0;
+    ctx.reply(`👑 *ADMIN DASHBOARD*\n━━━━━━━━━━━━━━━\n👥 Total Users: ${count}\n✅ Total Global OTPs: ${totalOtps}`, { parse_mode: 'Markdown' });
+});
+
+bot.command('userinfo', async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_ID) return;
+    const targetId = ctx.message.text.split(' ')[1];
+    if (!targetId) return ctx.reply('⚠️ Use format: `/userinfo UserID`', { parse_mode: 'Markdown' });
+    let { data } = await supabase.from('stex_users').select('*').eq('user_id', targetId).single();
+    if (!data) return ctx.reply('❌ User not found.');
+    ctx.reply(`👤 *User Info*\nName: ${data.username}\nPrefix: ${data.current_prefix}XXX\nOTPs: ${data.total_otps}\nBonus: $${data.bonus_balance || 0}\nWithdrawn: $${data.total_withdrawn || 0}`, { parse_mode: 'Markdown' });
+});
+
+bot.command('broadcast', async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_ID) return;
+    const msg = ctx.message.text.replace('/broadcast ', '');
+    if (!msg || msg === '/broadcast') return ctx.reply('⚠️ Format: `/broadcast Your Message`', { parse_mode: 'Markdown' });
+    const { data } = await supabase.from('stex_users').select('user_id');
+    let sent = 0;
+    for (let user of data) {
+        try { await bot.telegram.sendMessage(user.user_id, `📢 *Admin Update:*\n\n${msg}`, { parse_mode: 'Markdown' }); sent++; } catch (e) {}
+    }
+    ctx.reply(`✅ Broadcast sent to ${sent} users.`);
+});
+
+bot.command('addbalance', async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_ID) return;
+    const args = ctx.message.text.split(' ');
+    
+    if (args.length !== 3) return ctx.reply('⚠️ *Use format:* `/addbalance UserID Amount`\n\n*Example:* `/addbalance 12345678 1.5`\n_(To deduct balance, use minus. Example: -1.5)_', { parse_mode: 'Markdown' });
+
+    const targetId = args[1];
+    const amount = parseFloat(args[2]);
+
+    if (isNaN(amount)) return ctx.reply('❌ Invalid amount!');
+
+    let { data: user } = await supabase.from('stex_users').select('*').eq('user_id', targetId).single();
+    if (!user) return ctx.reply('❌ User not found in database.');
+
+    const newBonus = (user.bonus_balance || 0) + amount;
+    await updateUser(targetId, { bonus_balance: newBonus });
+
+    ctx.reply(`✅ Successfully updated balance for \`${targetId}\`\n💰 *New Bonus Balance:* $${newBonus.toFixed(3)}`, { parse_mode: 'Markdown' });
+
+    // ইউজারকে জানিয়ে দেওয়া
+    if (amount > 0) {
+        bot.telegram.sendMessage(targetId, `🎁 *BONUS RECEIVED!*\n\nAdmin has added $${amount.toFixed(3)} to your wallet!`, { parse_mode: 'Markdown' }).catch(()=>{});
+    }
+});
+
 bot.action(/^appr_(.+)_(.+)$/, async (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_ID) return;
     const targetUserId = ctx.match[1];
@@ -321,6 +372,9 @@ bot.action(/^reje_(.+)_(.+)$/, async (ctx) => {
     await bot.telegram.sendMessage(targetUserId, `⚠️ *PAYMENT REJECTED* ⚠️\n\nYour withdrawal request of $${refundAmount} was rejected by the admin. The amount has been refunded back to your bot balance.`, { parse_mode: 'Markdown' }).catch(()=>{});
 });
 
+// ==========================================
+// 👤 PROFILE & GET NUMBER LOGIC
+// ==========================================
 bot.hears('👤 My Profile', async (ctx) => { 
     try {
         const user = await getUser(ctx.from.id);
@@ -330,16 +384,12 @@ bot.hears('👤 My Profile', async (ctx) => {
     } catch (e) {}
 });
 
-// ==========================================
-// 📜 RECENT HISTORY (AUTO-CLEANUP 5 OTP LIMIT)
-// ==========================================
 bot.hears('📜 Recent History', async (ctx) => {
     try {
         const user = await getUser(ctx.from.id);
         const history = user.history || [];
         if (history.length === 0) return ctx.reply('📭 You have no successful OTP history yet.');
         let msg = `📜 *Your Last 5 OTPs*\n━━━━━━━━━━━━━━━\n`;
-        // ডাটাবেস নিজেই এখন শুধু লাস্ট ৫টা সেভ রাখবে, তাই এখানে পুরোটাই লুপ করা যাবে
         history.reverse().forEach(h => { msg += `📞 \`+${h.num}\`\n💬 Code: \`${h.code}\`\n\n`; });
         ctx.reply(msg, { parse_mode: 'Markdown' });
     } catch (e) {}
@@ -403,8 +453,6 @@ bot.action(/chk_(.+)/, async (ctx) => {
                 const user = await getUser(ctx.from.id);
                 const newHistory = user.history || [];
                 newHistory.push({ num: foundOtp.number, code: pureCode });
-                
-                // শুধুমাত্র লাস্ট ৫টা OTP ডাটাবেসে সেভ করা হবে, পুরোনো অটো মুছে যাবে
                 const cappedHistory = newHistory.slice(-5); 
                 
                 await updateUser(ctx.from.id, { total_otps: user.total_otps + 1, history: cappedHistory });
